@@ -5,9 +5,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import 'package:googleapis/drive/v3.dart' as drive;
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -19,8 +16,6 @@ import '../../models/ponto_model.dart';
 class PontoProvider extends ChangeNotifier {
   final DbHelper _db = DbHelper();
   final ImagePicker _picker = ImagePicker();
-  final GoogleSignIn _googleSignIn =
-      GoogleSignIn(scopes: [drive.DriveApi.driveFileScope]);
 
   // ── Estado ──────────────────────────────────────────────────────
   List<Ponto> _pontosDoDia = [];
@@ -35,8 +30,9 @@ class PontoProvider extends ChangeNotifier {
   static const Duration metaSemanal = Duration(hours: 20);
   static const Duration metaDiaria = Duration(hours: 4);
 
+  // Regex patterns melhorados para capturar dados com quebras de linha
   static final RegExp _regexNome = RegExp(
-    r'NOME\s*[:\-]?\s*([A-Za-zÀ-ÿ ]{3,80})',
+    r'NOME\s*[:\-]?\s*([A-Za-zÀ-ÿ\s]{3,100}?)(?=\s*(?:LOCAL|MODELO|CNPJ|PIS|NSR|DATA|HORA|AO:|CET|$))',
     caseSensitive: false,
   );
   static final RegExp _regexData =
@@ -272,12 +268,19 @@ class PontoProvider extends ChangeNotifier {
   }
 
   ComprovanteDados _extrairDadosOCR(String texto) {
-    final nome = _regexNome.firstMatch(texto)?.group(1)?.trim() ?? '';
-    final data = _regexData.firstMatch(texto)?.group(1)?.trim() ??
+    // Normalizar espaços em branco (quebras de linha, abas, múltiplos espaços)
+    final textoNormalizado = texto.replaceAll(RegExp(r'\s+'), ' ');
+    
+    // Extrair dados com o texto normalizado
+    var nomeRaw = _regexNome.firstMatch(textoNormalizado)?.group(1)?.trim() ?? '';
+    // Remover espaços extras dentro do nome
+    final nome = nomeRaw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    
+    final data = _regexData.firstMatch(textoNormalizado)?.group(1)?.trim() ??
         DateFormat('dd/MM/yyyy').format(DateTime.now());
-    final hora = _regexHora.firstMatch(texto)?.group(1)?.trim() ??
+    final hora = _regexHora.firstMatch(textoNormalizado)?.group(1)?.trim() ??
         DateFormat('HH:mm').format(DateTime.now());
-    final nsr = _regexNsr.firstMatch(texto)?.group(1)?.trim() ?? '';
+    final nsr = _regexNsr.firstMatch(textoNormalizado)?.group(1)?.trim() ?? '';
 
     return ComprovanteDados(nome: nome, data: data, hora: hora, nsr: nsr);
   }
@@ -290,59 +293,7 @@ class PontoProvider extends ChangeNotifier {
     }
   }
 
-  Future<String> gerarBackupCsv() async {
-    final registros = await _db.todosPontos();
-    final buffer = StringBuffer();
-    buffer.writeln('id,nome,nsr,data,hora,tipo,fotoPath,observacao');
-    for (final ponto in registros) {
-      final linha = [
-        ponto.id ?? '',
-        ponto.nome ?? '',
-        ponto.nsr ?? '',
-        ponto.data,
-        ponto.hora,
-        ponto.tipo,
-        ponto.fotoPath ?? '',
-        ponto.observacao?.replaceAll('"', '""') ?? '',
-      ]
-          .map((value) => '"${value.toString()}"')
-          .join(',');
-      buffer.writeln(linha);
-    }
 
-    final dir = await getApplicationDocumentsDirectory();
-    final arquivo = File(
-      p.join(dir.path, 'backup_pontos_${DateTime.now().toIso8601String()}.csv'),
-    );
-    await arquivo.writeAsString(buffer.toString());
-    return arquivo.path;
-  }
-
-  Future<String?> salvarBackupNoGoogleDrive() async {
-    try {
-      final arquivoCsv = await gerarBackupCsv();
-      final conta = await _googleSignIn.signIn();
-      if (conta == null) {
-        return null;
-      }
-
-      final headers = await conta.authHeaders;
-      final client = GoogleAuthClient(headers);
-      final driveApi = drive.DriveApi(client);
-      final file = drive.File(
-        name: 'backup_pontos_${DateTime.now().toIso8601String()}.csv',
-        mimeType: 'text/csv',
-      );
-      final media = drive.Media(File(arquivoCsv).openRead(),
-          await File(arquivoCsv).length());
-      final created = await driveApi.files.create(file, uploadMedia: media);
-      return created.id;
-    } catch (e) {
-      _erro = 'Erro ao salvar backup no Drive: $e';
-      notifyListeners();
-      return null;
-    }
-  }
 
   Future<bool> testarPermissaoCamera() async {
     return await _solicitarPermissaoCamera();
@@ -429,15 +380,4 @@ class ComprovanteDados {
   });
 }
 
-class GoogleAuthClient extends http.BaseClient {
-  final Map<String, String> _headers;
-  final http.Client _client;
 
-  GoogleAuthClient(this._headers) : _client = http.Client();
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
-    request.headers.addAll(_headers);
-    return _client.send(request);
-  }
-}
