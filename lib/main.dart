@@ -14,6 +14,9 @@ void main() async {
   // Português brasileiro para datas
   await initializeDateFormatting('pt_BR', null);
 
+  final pontoProvider = PontoProvider();
+  await pontoProvider.carregarConfiguracaoInicial();
+
   // Orientação apenas portrait
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
@@ -22,7 +25,7 @@ void main() async {
 
   runApp(
     ChangeNotifierProvider(
-      create: (_) => PontoProvider(),
+      create: (_) => pontoProvider,
       child: const PontoApp(),
     ),
   );

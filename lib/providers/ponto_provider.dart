@@ -9,13 +9,19 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../database/db_helper.dart';
+import '../../models/abono_entry.dart';
 import '../../models/ponto_model.dart';
+import '../services/app_settings_store.dart';
+import '../services/backup_service.dart';
+import '../services/comprovante_image_storage.dart';
 
 class PontoProvider extends ChangeNotifier {
   final DbHelper _db = DbHelper();
   final ImagePicker _picker = ImagePicker();
+  final AppSettingsStore _settings = AppSettingsStore();
 
   // ── Estado ──────────────────────────────────────────────────────
   List<Ponto> _pontosDoDia = [];
@@ -26,8 +32,13 @@ class PontoProvider extends ChangeNotifier {
   String? _erro;
   int? _ultimoPontoId; // para vincular foto ao último registro
 
-  // ── Constante de negócio ─────────────────────────────────────────
-  static const Duration metaSemanal = Duration(hours: 20);
+  double _metaSemanalHoras = AppSettingsStore.metaSemanalHorasPadrao;
+  List<AbonoEntry> _abonos = [];
+
+  /// Meta semanal configurável (padrão 20h).
+  Duration get metaSemanal =>
+      Duration(minutes: (_metaSemanalHoras * 60).round());
+
   static const Duration metaDiaria = Duration(hours: 4);
 
   // Regex patterns melhorados para capturar dados com quebras de linha
@@ -50,6 +61,83 @@ class PontoProvider extends ChangeNotifier {
   bool get carregando => _carregando;
   String? get erro => _erro;
   int? get ultimoPontoId => _ultimoPontoId;
+
+  double get metaSemanalHorasValor => _metaSemanalHoras;
+
+  /// Ex.: `20` ou `20,5` para UI.
+  String get metaSemanalHorasTexto {
+    final h = _metaSemanalHoras;
+    if ((h - h.round()).abs() < 1e-9) return '${h.round()}';
+    return h.toStringAsFixed(1).replaceAll('.', ',');
+  }
+
+  List<AbonoEntry> get abonos => List.unmodifiable(_abonos);
+
+  Duration get abonoHoje => _abonoNoDia(DateTime.now());
+
+  Duration get horasHojeComAbono => horasHoje + abonoHoje;
+
+  Duration get horasSemanaComAbono =>
+      horasSemana + _abonoNaSemana(DateTime.now());
+
+  Future<void> carregarConfiguracaoInicial() async {
+    _metaSemanalHoras = await _settings.lerMetaSemanalHoras();
+    _abonos = await _settings.lerAbonos();
+    notifyListeners();
+  }
+
+  Future<void> definirMetaSemanalHoras(double horas) async {
+    _metaSemanalHoras = horas.clamp(1, 60);
+    await _settings.gravarMetaSemanalHoras(_metaSemanalHoras);
+    notifyListeners();
+  }
+
+  Future<void> adicionarAbono(DateTime data, Duration horas) async {
+    if (horas <= Duration.zero) return;
+    final id = DateTime.now().microsecondsSinceEpoch.toString();
+    final dia = AbonoEntry.normalizarDia(data);
+    _abonos.add(AbonoEntry(id: id, data: dia, horas: horas));
+    await _settings.gravarAbonos(_abonos);
+    notifyListeners();
+  }
+
+  Future<void> removerAbono(String id) async {
+    _abonos.removeWhere((a) => a.id == id);
+    await _settings.gravarAbonos(_abonos);
+    notifyListeners();
+  }
+
+  Duration _abonoNoDia(DateTime dia) {
+    final key = AbonoEntry.normalizarDia(dia);
+    return _abonos
+        .where((a) => AbonoEntry.normalizarDia(a.data) == key)
+        .fold(Duration.zero, (s, a) => s + a.horas);
+  }
+
+  Duration _abonoNaSemana(DateTime ref) {
+    final weekday = ref.weekday;
+    final inicio =
+        DateTime(ref.year, ref.month, ref.day).subtract(Duration(days: weekday - 1));
+    final fim = inicio.add(const Duration(days: 7));
+    return _abonos.where((a) {
+      final d = AbonoEntry.normalizarDia(a.data);
+      return !d.isBefore(inicio) && d.isBefore(fim);
+    }).fold(Duration.zero, (s, a) => s + a.horas);
+  }
+
+  Duration _abonoNoMes(int ano, int mes) {
+    final inicio = DateTime(ano, mes, 1);
+    final fim = DateTime(ano, mes + 1, 1);
+    return _abonos.where((a) {
+      final d = AbonoEntry.normalizarDia(a.data);
+      return !d.isBefore(inicio) && d.isBefore(fim);
+    }).fold(Duration.zero, (s, a) => s + a.horas);
+  }
+
+  Map<String, dynamic> _configParaBackup() => {
+        'metaSemanalHoras': _metaSemanalHoras,
+        'abonos': _abonos.map((e) => e.toJson()).toList(),
+      };
 
   // ── Tipo do próximo ponto (lógica automática) ────────────────────
   String get proximoTipo {
@@ -97,27 +185,26 @@ class PontoProvider extends ChangeNotifier {
   Duration get horasHoje => calcularHoras(_pontosDoDia);
   Duration get horasSemana => calcularHoras(_pontosDaSemana);
   Duration get horasMes => calcularHoras(_pontosDoMes);
-  Duration get saldoHoje => horasHoje - metaDiaria;
+  Duration get saldoHoje => horasHojeComAbono - metaDiaria;
 
-  /// Banco de horas = horas trabalhadas na semana − meta de 20h
-  Duration get bancoDaSemanaSaldo => horasSemana - metaSemanal;
+  /// Banco da semana: pontos batidos + abonos da semana − meta semanal
+  Duration get bancoDaSemanaSaldo => horasSemanaComAbono - metaSemanal;
 
   /// Banco acumulado total (mês)
   Duration get bancoDoMesSaldo {
-    // Calcula quantas semanas tem no mês e multiplica a meta
     final hoje = DateTime.now();
     final diasNoMes = DateTime(hoje.year, hoje.month + 1, 0).day;
     final semanasNoMes = diasNoMes / 7;
     final metaMes = Duration(
       microseconds: (metaSemanal.inMicroseconds * semanasNoMes).round(),
     );
-    return horasMes - metaMes;
+    return horasMes + _abonoNoMes(hoje.year, hoje.month) - metaMes;
   }
 
   /// Progresso semanal de 0.0 a 1.0 (pode ultrapassar 1.0)
   double get progressoSemanal {
     if (metaSemanal.inSeconds == 0) return 0;
-    return horasSemana.inSeconds / metaSemanal.inSeconds;
+    return horasSemanaComAbono.inSeconds / metaSemanal.inSeconds;
   }
 
   /// Ponto está aberto (última batida foi entrada/retorno)
@@ -128,25 +215,36 @@ class PontoProvider extends ChangeNotifier {
   }
 
   // ── Carregamento de dados ────────────────────────────────────────
-  Future<void> carregarTodos() async {
-    _setCarregando(true);
+  /// Recarrega dia, semana, mês e histórico. Consultas rodam em paralelo.
+  /// [indicadorCarregamento]: evita spinner global em atualizações pontuais (ex.: após salvar).
+  Future<void> carregarTodos({bool indicadorCarregamento = true}) async {
+    if (indicadorCarregamento) _setCarregando(true);
     try {
       final agora = DateTime.now();
-      _pontosDoDia = await _db.pontosDoDia(agora);
-      _pontosDaSemana = await _db.pontosDaSemana(agora);
-      _pontosDoMes = await _db.pontosDoMes(agora.year, agora.month);
-      _historico = await _db.todosPontos();
+      final bundled = await Future.wait<List<Ponto>>([
+        _db.pontosDoDia(agora),
+        _db.pontosDaSemana(agora),
+        _db.pontosDoMes(agora.year, agora.month),
+        _db.todosPontos(),
+      ]);
+      _pontosDoDia = bundled[0];
+      _pontosDaSemana = bundled[1];
+      _pontosDoMes = bundled[2];
+      _historico = bundled[3];
       _erro = null;
     } catch (e) {
       _erro = 'Erro ao carregar dados: $e';
     } finally {
-      _setCarregando(false);
+      if (indicadorCarregamento) {
+        _setCarregando(false);
+      } else {
+        notifyListeners();
+      }
     }
   }
 
   // ── Registrar ponto ──────────────────────────────────────────────
   Future<void> registrarPonto({String? tipo, String? observacao}) async {
-    _setCarregando(true);
     try {
       final agora = DateTime.now();
       final novoPonto = Ponto(
@@ -158,12 +256,10 @@ class PontoProvider extends ChangeNotifier {
       );
       final id = await _db.inserirPonto(novoPonto);
       _ultimoPontoId = id;
-      await carregarTodos();
+      await carregarTodos(indicadorCarregamento: false);
     } catch (e) {
       _erro = 'Erro ao registrar ponto: $e';
       notifyListeners();
-    } finally {
-      _setCarregando(false);
     }
   }
 
@@ -206,13 +302,16 @@ class PontoProvider extends ChangeNotifier {
       await Directory(p.join(dir.path, 'comprovantes')).create(recursive: true);
       final nomeFoto = 'comprovante_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final destino = p.join(dir.path, 'comprovantes', nomeFoto);
-      await File(foto.path).copy(destino);
 
-      // Processar OCR
-      final inputImage = InputImage.fromFilePath(destino);
+      final inputImage = InputImage.fromFilePath(foto.path);
       final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
       final recognizedText = await textRecognizer.processImage(inputImage);
       textRecognizer.close();
+
+      await ComprovanteImageStorage.salvarComprimido(
+        sourcePath: foto.path,
+        destinoPath: destino,
+      );
 
       final textoExtraido = recognizedText.text;
       final dados = _extrairDadosOCR(textoExtraido);
@@ -243,7 +342,6 @@ class PontoProvider extends ChangeNotifier {
     String? observacao,
     String? tipo,
   }) async {
-    _setCarregando(true);
     try {
       final dataHora = _criarDateTime(data, hora);
       final novoPonto = Ponto(
@@ -258,12 +356,10 @@ class PontoProvider extends ChangeNotifier {
       );
       final id = await _db.inserirPonto(novoPonto);
       _ultimoPontoId = id;
-      await carregarTodos();
+      await carregarTodos(indicadorCarregamento: false);
     } catch (e) {
       _erro = 'Erro ao registrar ponto: $e';
       notifyListeners();
-    } finally {
-      _setCarregando(false);
     }
   }
 
@@ -316,9 +412,12 @@ class PontoProvider extends ChangeNotifier {
       final destino = p.join(dir.path, 'comprovantes', nomeFoto);
       await Directory(p.join(dir.path, 'comprovantes'))
           .create(recursive: true);
-      await File(foto.path).copy(destino);
+      await ComprovanteImageStorage.salvarComprimido(
+        sourcePath: foto.path,
+        destinoPath: destino,
+      );
       await _db.atualizarFoto(pontoId, destino);
-      await carregarTodos();
+      await carregarTodos(indicadorCarregamento: false);
     } catch (e) {
       _erro = 'Erro: $e';
       notifyListeners();
@@ -328,7 +427,56 @@ class PontoProvider extends ChangeNotifier {
   // ── Deletar ponto ─────────────────────────────────────────────────
   Future<void> deletarPonto(int id) async {
     await _db.deletarPonto(id);
-    await carregarTodos();
+    await carregarTodos(indicadorCarregamento: false);
+  }
+
+  // ── Backup (exportar / importar) ─────────────────────────────────
+  Future<bool> exportarECompartilharBackup() async {
+    try {
+      _setCarregando(true);
+      _erro = null;
+      final file = await BackupService.criarArquivoExportacao(
+        _db,
+        config: _configParaBackup(),
+      );
+      await Share.shareXFiles(
+        [
+          XFile(
+            file.path,
+            mimeType: 'application/json',
+            name: p.basename(file.path),
+          ),
+        ],
+        subject: 'Backup Meu Ponto',
+        text: 'Backup dos registros de ponto.',
+      );
+      return true;
+    } catch (e) {
+      _erro = 'Erro ao exportar: $e';
+      notifyListeners();
+      return false;
+    } finally {
+      _setCarregando(false);
+    }
+  }
+
+  Future<int?> importarBackupSubstituindo(String caminhoArquivo) async {
+    try {
+      _setCarregando(true);
+      _erro = null;
+      final result =
+          await BackupService.importarDeArquivo(File(caminhoArquivo), _db);
+      await _settings.aplicarConfigBackup(result.config);
+      await carregarConfiguracaoInicial();
+      await carregarTodos(indicadorCarregamento: false);
+      return result.pontosImportados;
+    } catch (e) {
+      _erro = 'Erro ao importar: $e';
+      notifyListeners();
+      return null;
+    } finally {
+      _setCarregando(false);
+    }
   }
 
   // ── Utilitários ──────────────────────────────────────────────────

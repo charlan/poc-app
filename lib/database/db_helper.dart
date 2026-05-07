@@ -150,16 +150,26 @@ class DbHelper {
     return maps.map(Ponto.fromMap).toList();
   }
 
-  /// Todos os pontos (histórico completo) — paginado
-  Future<List<Ponto>> todosPontos({int limite = 100, int offset = 0}) async {
+  /// Todos os pontos (histórico completo). [limite] nulo = sem limite.
+  Future<List<Ponto>> todosPontos({int? limite, int offset = 0}) async {
     final db = await database;
-    final maps = await db.query(
-      'pontos',
-      orderBy: 'dataHora DESC',
-      limit: limite,
-      offset: offset,
-    );
+    final maps = limite != null
+        ? await db.query(
+            'pontos',
+            orderBy: 'dataHora DESC',
+            limit: limite,
+            offset: offset,
+          )
+        : await db.query(
+            'pontos',
+            orderBy: 'dataHora DESC',
+          );
     return maps.map(Ponto.fromMap).toList();
+  }
+
+  Future<void> limparTodosPontos() async {
+    final db = await database;
+    await db.delete('pontos');
   }
 
   /// Último ponto inserido

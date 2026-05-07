@@ -9,7 +9,9 @@ import 'dart:io';
 
 import '../providers/ponto_provider.dart';
 import '../../models/ponto_model.dart';
+import 'backup_screen.dart';
 import 'history_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -63,6 +65,22 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_rounded),
+            tooltip: 'Configurações',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.backup_rounded),
+            tooltip: 'Backup',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BackupScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.history_rounded),
             tooltip: 'Histórico',
@@ -360,7 +378,8 @@ class _CardResumoHoje extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final horas = PontoProvider.formatarDuracao(provider.horasHoje);
+    final horas = PontoProvider.formatarDuracao(provider.horasHojeComAbono);
+    final abono = provider.abonoHoje;
     final cs = theme.colorScheme;
 
     return Container(
@@ -399,6 +418,15 @@ class _CardResumoHoje extends StatelessWidget {
                     fontFeatures: const [FontFeature.tabularFigures()],
                   ),
                 ),
+                if (abono > Duration.zero) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Inclui ${PontoProvider.formatarDuracao(abono)} de abono',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: cs.tertiary,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 6),
                 Text(
                   '${PontoProvider.formatarDuracao(provider.saldoHoje)} hoje',
@@ -456,7 +484,8 @@ class _ProgressoSemanal extends StatelessWidget {
   Widget build(BuildContext context) {
     final progresso = provider.progressoSemanal.clamp(0.0, 1.0);
     final cs = theme.colorScheme;
-    final horas = PontoProvider.formatarDuracao(provider.horasSemana);
+    final horas = PontoProvider.formatarDuracao(provider.horasSemanaComAbono);
+    final metaTxt = provider.metaSemanalHorasTexto;
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -477,7 +506,7 @@ class _ProgressoSemanal extends StatelessWidget {
                 ),
               ),
               Text(
-                '$horas / 20h',
+                '$horas / ${metaTxt}h',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: cs.onSurface.withOpacity(0.6),
                   fontFeatures: const [FontFeature.tabularFigures()],
@@ -821,110 +850,128 @@ class _ComprovanteBottomSheetState extends State<_ComprovanteBottomSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+    final maxH =
+        (MediaQuery.sizeOf(context).height - viewInsets.bottom) * 0.92;
 
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: cs.surface,
-        borderRadius: BorderRadius.circular(28),
-      ),
-      child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 20),
-              decoration: BoxDecoration(
-                color: cs.outline.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Text(
-              'Confirmar Comprovante',
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 12),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: Image.file(
-                File(widget.comprovante.fotoPath),
-                height: 180,
-                width: double.infinity,
-                fit: BoxFit.cover,
-              ),
-            ),
-            const SizedBox(height: 16),
-            _buildField(
-              label: 'Nome',
-              controller: _nomeController,
-              hint: 'Nome no comprovante',
-            ),
-            _buildField(
-              label: 'Data',
-              controller: _dataController,
-              hint: 'DD/MM/AAAA',
-            ),
-            _buildField(
-              label: 'Hora',
-              controller: _horaController,
-              hint: 'HH:MM',
-            ),
-            _buildField(
-              label: 'NSR',
-              controller: _nsrController,
-              hint: 'Número sequencial',
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Texto detectado (OCR)',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: cs.onSurface.withOpacity(0.65),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: cs.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Text(
-                widget.comprovante.textoOCR.isEmpty
-                    ? 'Nenhum texto reconhecido.'
-                    : widget.comprovante.textoOCR,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: cs.onSurface.withOpacity(0.75),
+    return Padding(
+      padding: EdgeInsets.only(bottom: viewInsets.bottom),
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+        padding: const EdgeInsets.all(24),
+        constraints: BoxConstraints(maxHeight: maxH),
+        decoration: BoxDecoration(
+          color: cs.surface,
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 20),
+                  decoration: BoxDecoration(
+                    color: cs.outline.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
-              ),
+                Text(
+                  'Confirmar Comprovante',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Image.file(
+                    File(widget.comprovante.fotoPath),
+                    height: 180,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildField(
+                  label: 'Nome',
+                  controller: _nomeController,
+                  hint: 'Nome no comprovante',
+                ),
+                _buildField(
+                  label: 'Data',
+                  controller: _dataController,
+                  hint: 'DD/MM/AAAA',
+                ),
+                _buildField(
+                  label: 'Hora',
+                  controller: _horaController,
+                  hint: 'HH:MM',
+                ),
+                _buildField(
+                  label: 'NSR',
+                  controller: _nsrController,
+                  hint: 'Número sequencial',
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Texto detectado (OCR)',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withOpacity(0.65),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: cs.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: SingleChildScrollView(
+                      child: Text(
+                        widget.comprovante.textoOCR.isEmpty
+                            ? 'Nenhum texto reconhecido.'
+                            : widget.comprovante.textoOCR,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: cs.onSurface.withOpacity(0.75),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  height: 52,
+                  child: FilledButton(
+                    onPressed: _salvando ? null : _salvarComprovante,
+                    child: _salvando
+                        ? const CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          )
+                        : const Text('Salvar ponto'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 52,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancelar'),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 20),
-            SizedBox(
-              height: 52,
-              child: FilledButton(
-                onPressed: _salvando ? null : _salvarComprovante,
-                child: _salvando
-                    ? const CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                      )
-                    : const Text('Salvar ponto'),
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 52,
-              child: OutlinedButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancelar'),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

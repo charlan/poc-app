@@ -1,22 +1,19 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+// Widget smoke tests dependem de sqflite / prefs no dispositivo alvo.
+// Aqui validamos utilitários estáveis do provider.
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ponto_app/main.dart';
+import 'package:ponto_app/providers/ponto_provider.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const PontoApp());
-
-    // Verify that the main screen is shown.
-    expect(find.text('Meu Ponto'), findsOneWidget);
-    expect(find.byType(FilledButton), findsOneWidget);
+  test('formatarDuracao formata horas e minutos', () {
+    expect(
+      PontoProvider.formatarDuracao(const Duration(hours: 2, minutes: 5)),
+      '2h 05m',
+    );
+    expect(
+      PontoProvider.formatarDuracao(const Duration(hours: -1, minutes: -30)),
+      '-1h 30m',
+    );
   });
 }
